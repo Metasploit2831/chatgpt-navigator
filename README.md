@@ -5,6 +5,7 @@ A Chrome extension that turns ChatGPT conversations into a compact, searchable s
 ## Features
 
 - Prompt and answer outline grouped by conversation turn
+- Toggle between outline view and a visual mind map
 - Click any item to jump back to that message
 - Search across indexed prompts and answers
 - Optional Chrome built-in AI labels for every message
@@ -27,7 +28,7 @@ ChatGPT DOM
   -> Create fast rule-based labels
   -> Try Chrome built-in AI labels for every message
   -> Group assistant answers under the nearest prompt
-  -> Render a searchable sidebar
+  -> Render a searchable outline or mind map
   -> Scroll to messages on click
 ```
 
