@@ -3,6 +3,7 @@ const TOGGLE_ID = "chatgpt-navigator-toggle";
 const COLLAPSED_KEY = "chatgptNavigatorCollapsed";
 const VIEW_MODE_KEY = "chatgptNavigatorViewMode";
 const SIDEBAR_WIDTH_KEY = "chatgptNavigatorWidth";
+const BRAIN_STORE_KEY = "chatgptNavigatorBrainStore";
 const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
 const TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"]',
@@ -12,12 +13,16 @@ const TURN_SELECTOR = [
 const AI_LABEL_INPUT_LIMIT = 4000;
 const VIEW_OUTLINE = "outline";
 const VIEW_MINDMAP = "mindmap";
+const VIEW_BRAIN = "brain";
 const MINDMAP_MIN_SCALE = 0.05;
 const MINDMAP_MAX_SCALE = 1.4;
 const MINDMAP_ZOOM_STEP = 0.14;
 const AI_RELATION_LABEL_LIMIT = 40;
 const AI_RELATION_EXCERPT_LIMIT = 140;
 const AI_RELATION_EXCERPT_MAX_PROMPTS = 40;
+const BRAIN_MAX_CHATS = 24;
+const BRAIN_MAX_PROMPTS_PER_CHAT = 80;
+const BRAIN_MAX_SEMANTIC_EDGES = 180;
 
 let isRendering = false;
 let renderTimer = null;
@@ -27,6 +32,7 @@ const aiLabelCache = new Map();
 let summarizerPromise = null;
 let languageModelSessionPromise = null;
 let manualMindMapScale = null;
+let manualBrainScale = null;
 let relationAnalysisState = createEmptyRelationAnalysisState();
 let suppressMindMapClickUntil = 0;
 
@@ -486,11 +492,204 @@ function buildOutline(messages) {
 
 function getViewMode() {
   const viewMode = localStorage.getItem(VIEW_MODE_KEY);
-  return viewMode === VIEW_MINDMAP ? VIEW_MINDMAP : VIEW_OUTLINE;
+  if ([VIEW_OUTLINE, VIEW_MINDMAP, VIEW_BRAIN].includes(viewMode)) return viewMode;
+  return VIEW_OUTLINE;
 }
 
 function setViewMode(viewMode) {
   localStorage.setItem(VIEW_MODE_KEY, viewMode);
+}
+
+function getChatId() {
+  const chatMatch = location.pathname.match(/\/c\/([^/?#]+)/);
+  if (chatMatch) return chatMatch[1];
+
+  return location.pathname || location.href;
+}
+
+function getConversationTitle(outline) {
+  const firstPrompt = outline.find((node) => node.role === "user");
+  return firstPrompt?.text || document.title.replace(/\s*\|\s*ChatGPT\s*$/i, "") || "Current chat";
+}
+
+function getTopicFromText(text) {
+  return generateLabel(text)
+    .split(/\s+/)
+    .slice(0, 3)
+    .join(" ") || "Untitled";
+}
+
+function getTopicKey(topic) {
+  return String(topic || "")
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getPromptTopic(node, relationAnalysis) {
+  return relationAnalysis?.topicsByPrompt?.get(node.promptIndex) || getTopicFromText(node.fullText || node.text);
+}
+
+function readBrainStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BRAIN_STORE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch (error) {
+    logNavigatorError("reading brain store failed", error);
+    return {};
+  }
+}
+
+function writeBrainStore(store) {
+  try {
+    localStorage.setItem(BRAIN_STORE_KEY, JSON.stringify(store));
+  } catch (error) {
+    logNavigatorError("writing brain store failed", error);
+  }
+}
+
+function persistConversationToBrain(outline) {
+  if (outline.length === 0) return readBrainStore();
+
+  const chatId = getChatId();
+  const relationAnalysis = getRelationAnalysisForOutline(outline);
+  const store = readBrainStore();
+  const prompts = outline
+    .slice(0, BRAIN_MAX_PROMPTS_PER_CHAT)
+    .map((node) => {
+      const topic = getPromptTopic(node, relationAnalysis);
+
+      return {
+        id: `${chatId}:${node.promptIndex}`,
+        chatId,
+        promptIndex: node.promptIndex,
+        label: node.text,
+        text: node.fullText,
+        topic,
+        topicKey: getTopicKey(topic),
+        url: location.href
+      };
+    });
+
+  store[chatId] = {
+    id: chatId,
+    title: getConversationTitle(outline),
+    url: location.href,
+    updatedAt: Date.now(),
+    prompts
+  };
+
+  const orderedChatIds = Object.values(store)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .map((chat) => chat.id);
+
+  orderedChatIds.slice(BRAIN_MAX_CHATS).forEach((oldChatId) => {
+    delete store[oldChatId];
+  });
+
+  writeBrainStore(store);
+  return store;
+}
+
+function buildBrainGraph(outline, rawQuery) {
+  const currentStore = persistConversationToBrain(outline);
+  const currentChatId = getChatId();
+  const query = rawQuery.trim().toLowerCase();
+  const chats = Object.values(currentStore)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const nodes = [];
+  const edges = [];
+  const nodesById = new Map();
+  const topicBuckets = new Map();
+
+  chats.forEach((chat) => {
+    const chatNode = {
+      id: `chat:${chat.id}`,
+      type: "chat",
+      label: chat.id === currentChatId ? "Current chat" : chat.title,
+      title: chat.title,
+      url: chat.url,
+      current: chat.id === currentChatId,
+      weight: Math.max(8, Math.min(28, (chat.prompts?.length || 0) * 1.8))
+    };
+
+    nodes.push(chatNode);
+    nodesById.set(chatNode.id, chatNode);
+
+    (chat.prompts || []).forEach((prompt) => {
+      const haystack = `${prompt.label} ${prompt.text} ${prompt.topic} ${chat.title}`.toLowerCase();
+      if (query && !haystack.includes(query)) return;
+
+      const promptNode = {
+        id: prompt.id,
+        type: "prompt",
+        label: prompt.label,
+        title: prompt.text,
+        topic: prompt.topic,
+        topicKey: prompt.topicKey,
+        chatId: chat.id,
+        promptIndex: prompt.promptIndex,
+        url: prompt.url,
+        current: chat.id === currentChatId,
+        weight: prompt.topicKey ? 8 : 6
+      };
+
+      nodes.push(promptNode);
+      nodesById.set(promptNode.id, promptNode);
+
+      edges.push({
+        from: chatNode.id,
+        to: promptNode.id,
+        type: "chat",
+        strength: 0.34
+      });
+
+      if (prompt.topicKey) {
+        if (!topicBuckets.has(prompt.topicKey)) topicBuckets.set(prompt.topicKey, []);
+        topicBuckets.get(prompt.topicKey).push(promptNode.id);
+      }
+    });
+  });
+
+  let semanticEdgeCount = 0;
+
+  topicBuckets.forEach((promptIds, topicKey) => {
+    if (promptIds.length < 2 || semanticEdgeCount >= BRAIN_MAX_SEMANTIC_EDGES) return;
+
+    const topicNodeId = `topic:${topicKey}`;
+    const topicNode = {
+      id: topicNodeId,
+      type: "topic",
+      label: nodesById.get(promptIds[0])?.topic || "Related idea",
+      title: `${promptIds.length} related prompts`,
+      weight: Math.min(32, 10 + promptIds.length * 2.5)
+    };
+
+    nodes.push(topicNode);
+    nodesById.set(topicNodeId, topicNode);
+
+    promptIds.slice(0, 12).forEach((promptId) => {
+      if (semanticEdgeCount >= BRAIN_MAX_SEMANTIC_EDGES) return;
+
+      edges.push({
+        from: topicNodeId,
+        to: promptId,
+        type: "semantic",
+        strength: 0.7
+      });
+      semanticEdgeCount += 1;
+    });
+  });
+
+  return {
+    nodes,
+    edges,
+    chatCount: chats.length,
+    currentChatId
+  };
 }
 
 function getMinSidebarWidth() {
@@ -592,7 +791,8 @@ function createViewTabs(selectedMode, onSelect) {
 
   [
     { value: VIEW_OUTLINE, label: "Outline" },
-    { value: VIEW_MINDMAP, label: "Mind Map" }
+    { value: VIEW_MINDMAP, label: "Mind Map" },
+    { value: VIEW_BRAIN, label: "Brain" }
   ].forEach((view) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -1145,10 +1345,338 @@ function createMindMap(outline, rawQuery) {
   return list;
 }
 
+function getBrainNodeRadius(node) {
+  if (node.type === "chat") return node.current ? 24 : 17;
+  if (node.type === "topic") return node.weight || 16;
+  return node.current ? 8 : 6;
+}
+
+function layoutBrainGraph(graph) {
+  const width = 1180;
+  const height = 880;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const chats = graph.nodes.filter((node) => node.type === "chat");
+  const topics = graph.nodes.filter((node) => node.type === "topic");
+  const prompts = graph.nodes.filter((node) => node.type === "prompt");
+  const positions = new Map();
+  const currentChat = chats.find((chat) => chat.current);
+  const otherChats = chats.filter((chat) => !chat.current);
+
+  if (currentChat) {
+    positions.set(currentChat.id, { x: centerX, y: centerY });
+  }
+
+  otherChats.forEach((chat, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(otherChats.length, 1) - Math.PI / 2;
+    const radius = 300 + (index % 2) * 70;
+    positions.set(chat.id, {
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius
+    });
+  });
+
+  const promptsByChat = prompts.reduce((result, prompt) => {
+    if (!result.has(prompt.chatId)) result.set(prompt.chatId, []);
+    result.get(prompt.chatId).push(prompt);
+    return result;
+  }, new Map());
+
+  promptsByChat.forEach((chatPrompts, chatId) => {
+    const chatPosition = positions.get(`chat:${chatId}`) || { x: centerX, y: centerY };
+    const baseRadius = chatId === graph.currentChatId ? 190 : 105;
+
+    chatPrompts.forEach((prompt, index) => {
+      const angle = index * 2.399963 + (chatId === graph.currentChatId ? 0 : 0.7);
+      const radius = baseRadius + (index % 4) * 28;
+      positions.set(prompt.id, {
+        x: clamp(chatPosition.x + Math.cos(angle) * radius, 46, width - 46),
+        y: clamp(chatPosition.y + Math.sin(angle) * radius, 46, height - 46)
+      });
+    });
+  });
+
+  topics.forEach((topic) => {
+    const connectedPositions = graph.edges
+      .filter((edge) => edge.from === topic.id || edge.to === topic.id)
+      .map((edge) => positions.get(edge.from === topic.id ? edge.to : edge.from))
+      .filter(Boolean);
+
+    if (connectedPositions.length > 0) {
+      const average = connectedPositions.reduce((sum, position) => ({
+        x: sum.x + position.x,
+        y: sum.y + position.y
+      }), { x: 0, y: 0 });
+
+      positions.set(topic.id, {
+        x: average.x / connectedPositions.length,
+        y: average.y / connectedPositions.length
+      });
+      return;
+    }
+
+    positions.set(topic.id, {
+      x: centerX,
+      y: centerY
+    });
+  });
+
+  return {
+    width,
+    height,
+    positions
+  };
+}
+
+function createBrainSvgLine(edge, positions) {
+  const from = positions.get(edge.from);
+  const to = positions.get(edge.to);
+  if (!from || !to) return null;
+
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  line.setAttribute("x1", String(from.x));
+  line.setAttribute("y1", String(from.y));
+  line.setAttribute("x2", String(to.x));
+  line.setAttribute("y2", String(to.y));
+  line.setAttribute("class", `brain-edge brain-edge-${edge.type}`);
+  line.setAttribute("stroke-width", edge.type === "semantic" ? "1.6" : "1");
+  return line;
+}
+
+function createBrainSvgNode(node, position, outline) {
+  const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  group.setAttribute("class", `brain-node brain-node-${node.type}${node.current ? " is-current" : ""}`);
+  group.setAttribute("transform", `translate(${position.x} ${position.y})`);
+  group.setAttribute("tabindex", "0");
+
+  const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+  title.textContent = node.title || node.label;
+  group.appendChild(title);
+
+  const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  circle.setAttribute("r", String(getBrainNodeRadius(node)));
+  group.appendChild(circle);
+
+  if (node.type !== "prompt" || node.current || node.weight > 12) {
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(getBrainNodeRadius(node) + 8));
+    label.setAttribute("y", "4");
+    label.textContent = node.type === "topic" ? node.label : node.label.slice(0, 32);
+    group.appendChild(label);
+  }
+
+  const navigate = () => {
+    if (Date.now() < suppressMindMapClickUntil) return;
+    if (node.type === "topic") return;
+
+    if (node.current && node.type === "prompt") {
+      const promptNode = outline.find((item) => item.promptIndex === node.promptIndex);
+      promptNode?.element?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+
+    if (node.url && node.url !== location.href) {
+      location.href = node.url;
+    }
+  };
+
+  group.addEventListener("click", navigate);
+  group.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    navigate();
+  });
+
+  return group;
+}
+
+function createBrainGraph(outline, rawQuery) {
+  const graph = buildBrainGraph(outline, rawQuery);
+  const list = document.createElement("div");
+  list.className = "block-list block-list-map block-list-brain";
+
+  if (graph.nodes.length === 0) {
+    list.appendChild(createEmptyState("No saved prompt nodes yet. Open a chat with prompts, then refresh."));
+    return list;
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "mindmap-toolbar";
+
+  const status = document.createElement("span");
+  status.className = "mindmap-status";
+  status.dataset.state = "ready";
+  status.textContent = `${graph.chatCount} chats · ${graph.nodes.length} nodes · ${graph.edges.length} links`;
+
+  const controls = document.createElement("div");
+  controls.className = "mindmap-controls";
+  const zoomOut = createMapControlButton("−", "Zoom out");
+  const fit = createMapControlButton("Fit", "Fit the whole graph");
+  fit.classList.add("mindmap-fit-button");
+  const zoomValue = document.createElement("span");
+  zoomValue.className = "mindmap-zoom-value";
+  const zoomIn = createMapControlButton("+", "Zoom in");
+  controls.append(zoomOut, fit, zoomValue, zoomIn);
+  toolbar.append(status, controls);
+
+  const layout = layoutBrainGraph(graph);
+  const viewport = document.createElement("div");
+  viewport.className = "mindmap-viewport brain-viewport";
+
+  const canvas = document.createElement("div");
+  canvas.className = "mindmap-canvas brain-canvas";
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("brain-stage");
+  svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  svg.setAttribute("width", String(layout.width));
+  svg.setAttribute("height", String(layout.height));
+
+  const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  edgeLayer.setAttribute("class", "brain-edges");
+  graph.edges.forEach((edge) => {
+    const line = createBrainSvgLine(edge, layout.positions);
+    if (line) edgeLayer.appendChild(line);
+  });
+
+  const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  nodeLayer.setAttribute("class", "brain-nodes");
+  graph.nodes.forEach((node) => {
+    const position = layout.positions.get(node.id);
+    if (!position) return;
+    nodeLayer.appendChild(createBrainSvgNode(node, position, outline));
+  });
+
+  svg.append(edgeLayer, nodeLayer);
+  canvas.appendChild(svg);
+  viewport.appendChild(canvas);
+  list.append(toolbar, viewport);
+
+  const applyScale = (nextScale, options = {}) => {
+    const currentScale = Number(viewport.dataset.scale || 1);
+    const clampedScale = clamp(nextScale, MINDMAP_MIN_SCALE, MINDMAP_MAX_SCALE);
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = options.anchorClientX !== undefined
+      ? clamp(options.anchorClientX - rect.left, 0, viewport.clientWidth)
+      : viewport.clientWidth / 2;
+    const anchorY = options.anchorClientY !== undefined
+      ? clamp(options.anchorClientY - rect.top, 0, viewport.clientHeight)
+      : viewport.clientHeight / 2;
+    const worldX = (viewport.scrollLeft + anchorX) / currentScale;
+    const worldY = (viewport.scrollTop + anchorY) / currentScale;
+
+    viewport.dataset.scale = String(clampedScale);
+    canvas.style.width = `${layout.width * clampedScale}px`;
+    canvas.style.height = `${layout.height * clampedScale}px`;
+    svg.style.transform = `scale(${clampedScale})`;
+    zoomValue.textContent = `${Math.round(clampedScale * 100)}%`;
+
+    if (options.persist !== false) manualBrainScale = clampedScale;
+
+    if (options.preserveCenter || options.anchorClientX !== undefined || options.anchorClientY !== undefined) {
+      viewport.scrollLeft = Math.max(0, worldX * clampedScale - anchorX);
+      viewport.scrollTop = Math.max(0, worldY * clampedScale - anchorY);
+    } else {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+  };
+
+  zoomOut.addEventListener("click", () => {
+    applyScale(Number(viewport.dataset.scale || 1) - MINDMAP_ZOOM_STEP, { preserveCenter: true });
+  });
+  fit.addEventListener("click", () => {
+    manualBrainScale = null;
+    applyScale(getMindMapFitScale(viewport, layout.width, layout.height), { persist: false });
+  });
+  zoomIn.addEventListener("click", () => {
+    applyScale(Number(viewport.dataset.scale || 1) + MINDMAP_ZOOM_STEP, { preserveCenter: true });
+  });
+
+  viewport.addEventListener("wheel", (event) => {
+    event.preventDefault();
+
+    if (!event.ctrlKey) {
+      viewport.scrollLeft += event.deltaX;
+      viewport.scrollTop += event.deltaY;
+      return;
+    }
+
+    const currentScale = Number(viewport.dataset.scale || 1);
+    applyScale(currentScale * (1 - event.deltaY * 0.0025), {
+      preserveCenter: true,
+      anchorClientX: event.clientX,
+      anchorClientY: event.clientY
+    });
+  }, { passive: false });
+
+  let dragState = null;
+
+  viewport.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest(".mindmap-control-button")) return;
+
+    dragState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+      moved: false,
+      captured: false
+    };
+
+    viewport.classList.add("is-dragging");
+  });
+
+  viewport.addEventListener("pointermove", (event) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    const deltaX = event.clientX - dragState.startX;
+    const deltaY = event.clientY - dragState.startY;
+
+    if (!dragState.moved && Math.hypot(deltaX, deltaY) > 8) {
+      dragState.moved = true;
+      suppressMindMapClickUntil = Date.now() + 250;
+
+      if (!dragState.captured) {
+        viewport.setPointerCapture(event.pointerId);
+        dragState.captured = true;
+      }
+    }
+
+    if (!dragState.moved) return;
+
+    viewport.scrollLeft = dragState.scrollLeft - deltaX;
+    viewport.scrollTop = dragState.scrollTop - deltaY;
+  });
+
+  const endDrag = (event) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    if (dragState.captured && viewport.hasPointerCapture(event.pointerId)) {
+      viewport.releasePointerCapture(event.pointerId);
+    }
+
+    viewport.classList.remove("is-dragging");
+    dragState = null;
+  };
+
+  viewport.addEventListener("pointerup", endDrag);
+  viewport.addEventListener("pointercancel", endDrag);
+
+  requestAnimationFrame(() => {
+    const initialScale = manualBrainScale ?? getMindMapFitScale(viewport, layout.width, layout.height);
+    applyScale(initialScale, { persist: manualBrainScale !== null });
+  });
+
+  return list;
+}
+
 function renderContent(outline, query, viewMode) {
-  return viewMode === VIEW_MINDMAP
-    ? createMindMap(outline, query)
-    : renderOutlineList(outline, query);
+  if (viewMode === VIEW_MINDMAP) return createMindMap(outline, query);
+  if (viewMode === VIEW_BRAIN) return createBrainGraph(outline, query);
+  return renderOutlineList(outline, query);
 }
 
 function createSidebar(outline, messages) {
@@ -1208,7 +1736,7 @@ function createSidebar(outline, messages) {
   const viewTabs = createViewTabs(currentViewMode, (viewMode) => {
     currentViewMode = viewMode;
     setViewMode(viewMode);
-    if (viewMode === VIEW_MINDMAP) {
+    if (viewMode === VIEW_MINDMAP || viewMode === VIEW_BRAIN) {
       ensureMindMapAnalysis(outline, true);
     }
     rerenderContent();
@@ -1261,7 +1789,9 @@ function createSidebar(outline, messages) {
 
   searchInput.addEventListener("input", rerenderContent);
 
-  if (currentViewMode === VIEW_MINDMAP) {
+  persistConversationToBrain(outline);
+
+  if (currentViewMode === VIEW_MINDMAP || currentViewMode === VIEW_BRAIN) {
     ensureMindMapAnalysis(outline);
   }
 

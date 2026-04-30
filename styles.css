@@ -139,7 +139,7 @@ body.navigator-is-resizing * {
 
 .view-switch {
   display: inline-grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-top: 12px;
   padding: 4px;
@@ -625,6 +625,83 @@ body.navigator-is-resizing * {
   line-height: 1;
   text-transform: uppercase;
   letter-spacing: 0.02em;
+}
+
+.block-list-brain {
+  background:
+    radial-gradient(circle at 22% 28%, rgba(125, 223, 178, 0.07), transparent 24%),
+    radial-gradient(circle at 72% 62%, rgba(242, 195, 107, 0.06), transparent 26%);
+}
+
+.brain-stage {
+  display: block;
+  background: #101114;
+  border-radius: 12px;
+  transform-origin: top left;
+}
+
+.brain-edge {
+  pointer-events: none;
+}
+
+.brain-edge-chat {
+  stroke: rgba(110, 168, 255, 0.22);
+}
+
+.brain-edge-semantic {
+  stroke: rgba(125, 223, 178, 0.5);
+}
+
+.brain-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.brain-node circle {
+  stroke-width: 1.5;
+  transition: filter 150ms ease, stroke 150ms ease, transform 150ms ease;
+}
+
+.brain-node text {
+  fill: var(--navigator-text);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  paint-order: stroke;
+  pointer-events: none;
+  stroke: rgba(16, 17, 20, 0.88);
+  stroke-width: 4px;
+}
+
+.brain-node-chat circle {
+  fill: rgba(242, 195, 107, 0.86);
+  stroke: rgba(242, 195, 107, 0.36);
+}
+
+.brain-node-chat.is-current circle {
+  fill: rgba(110, 168, 255, 0.95);
+  stroke: rgba(255, 255, 255, 0.45);
+}
+
+.brain-node-prompt circle {
+  fill: rgba(110, 168, 255, 0.78);
+  stroke: rgba(110, 168, 255, 0.34);
+}
+
+.brain-node-prompt:not(.is-current) circle {
+  fill: rgba(189, 132, 190, 0.78);
+  stroke: rgba(189, 132, 190, 0.36);
+}
+
+.brain-node-topic circle {
+  fill: rgba(125, 223, 178, 0.92);
+  stroke: rgba(125, 223, 178, 0.42);
+}
+
+.brain-node:hover circle,
+.brain-node:focus-visible circle {
+  filter: drop-shadow(0 0 10px rgba(110, 168, 255, 0.58));
+  stroke: rgba(255, 255, 255, 0.72);
 }
 
 #chatgpt-navigator-toggle {
