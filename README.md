@@ -1,12 +1,13 @@
 # ChatGPT Navigator
 
-A Chrome extension that turns long ChatGPT conversations into a compact, searchable sidebar.
+A Chrome extension that turns ChatGPT conversations into a compact, searchable sidebar.
 
 ## Features
 
 - Prompt and answer outline grouped by conversation turn
 - Click any item to jump back to that message
 - Search across indexed prompts and answers
+- Optional Chrome built-in AI labels for every message
 - Clean overlay UI with keyboard focus states
 - No backend, tracking, or external dependencies
 
@@ -23,6 +24,8 @@ A Chrome extension that turns long ChatGPT conversations into a compact, searcha
 ```text
 ChatGPT DOM
   -> Extract user and assistant messages
+  -> Create fast rule-based labels
+  -> Try Chrome built-in AI labels for every message
   -> Group assistant answers under the nearest prompt
   -> Render a searchable sidebar
   -> Scroll to messages on click
@@ -37,3 +40,5 @@ ChatGPT DOM
 ## Notes
 
 ChatGPT DOM structure can change. If messages stop appearing, update `ROLE_SELECTOR` or `TURN_SELECTOR` in `content.js`.
+
+Chrome built-in AI labels require a supported Chrome desktop build and Gemini Nano availability. If unavailable, Navigator automatically keeps the rule-based labels.

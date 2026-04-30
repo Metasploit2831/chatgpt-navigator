@@ -7,11 +7,14 @@ const TURN_SELECTOR = [
   'article',
   'main [class*="group/conversation-turn"]'
 ].join(",");
+const AI_LABEL_INPUT_LIMIT = 4000;
 
 let isRendering = false;
 let renderTimer = null;
 let observer = null;
 let lastUrl = location.href;
+const aiLabelCache = new Map();
+let summarizerPromise = null;
 
 function generateLabel(text) {
   const stopWords = new Set([
@@ -32,6 +35,117 @@ function generateLabel(text) {
     .join(" ");
 
   return label || "Untitled";
+}
+
+function shouldUseAiLabel(text) {
+  return text.trim().length > 0 && "Summarizer" in globalThis;
+}
+
+function cleanAiLabel(label) {
+  return label
+    .replace(/^["'`\s-]+|["'`\s.]+$/g, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 72)
+    .trim();
+}
+
+async function getSummarizer() {
+  if (!("Summarizer" in globalThis)) return null;
+  if (summarizerPromise) return summarizerPromise;
+
+  summarizerPromise = (async () => {
+    const options = {
+      type: "headline",
+      format: "plain-text",
+      length: "short",
+      sharedContext: "Create short navigation labels for ChatGPT conversation messages."
+    };
+
+    if (typeof globalThis.Summarizer.availability === "function") {
+      const availability = await globalThis.Summarizer.availability(options);
+      if (availability === "unavailable") return null;
+    }
+
+    if (typeof globalThis.Summarizer.create !== "function") return null;
+    return globalThis.Summarizer.create(options);
+  })().then((summarizer) => {
+    if (!summarizer) summarizerPromise = null;
+    return summarizer;
+  }).catch(() => {
+    summarizerPromise = null;
+    return null;
+  });
+
+  return summarizerPromise;
+}
+
+async function summarizeLabel(text) {
+  const summarizer = await getSummarizer();
+  if (!summarizer || typeof summarizer.summarize !== "function") return null;
+
+  const summary = await summarizer.summarize(text.slice(0, AI_LABEL_INPUT_LIMIT));
+  const label = cleanAiLabel(String(summary || ""));
+
+  return label || null;
+}
+
+function queueAiLabel(text, fallbackLabel) {
+  const cached = aiLabelCache.get(text);
+  if (cached?.status === "ready" || cached?.status === "pending") return;
+
+  aiLabelCache.set(text, {
+    label: fallbackLabel,
+    source: "rule",
+    status: "pending"
+  });
+
+  summarizeLabel(text)
+    .then((label) => {
+      if (!label || label.toLowerCase() === fallbackLabel.toLowerCase()) {
+        aiLabelCache.set(text, {
+          label: fallbackLabel,
+          source: "rule",
+          status: "ready"
+        });
+        return;
+      }
+
+      aiLabelCache.set(text, {
+        label,
+        source: "ai",
+        status: "ready"
+      });
+
+      scheduleRender(0);
+    })
+    .catch(() => {
+      aiLabelCache.set(text, {
+        label: fallbackLabel,
+        source: "rule",
+        status: "ready"
+      });
+    });
+}
+
+function getLabel(text) {
+  const fallbackLabel = generateLabel(text);
+  const cached = aiLabelCache.get(text);
+
+  if (cached?.status === "ready") {
+    return {
+      text: cached.label,
+      source: cached.source
+    };
+  }
+
+  if (shouldUseAiLabel(text)) {
+    queueAiLabel(text, fallbackLabel);
+  }
+
+  return {
+    text: fallbackLabel,
+    source: "rule"
+  };
 }
 
 function getMessageText(element) {
@@ -83,11 +197,13 @@ function getMessages() {
     .map((element, index) => {
       const fullText = getMessageText(element);
       const role = inferRole(element, index);
+      const label = getLabel(fullText);
 
       return {
         id: index,
         role,
-        text: generateLabel(fullText),
+        text: label.text,
+        labelSource: label.source,
         fullText,
         element,
         children: []
@@ -172,6 +288,13 @@ function renderNode(node, level = 0) {
   const role = document.createElement("span");
   role.className = "node-role";
   role.textContent = node.role === "assistant" ? "Answer" : "Prompt";
+
+  if (node.labelSource === "ai") {
+    const aiBadge = document.createElement("span");
+    aiBadge.className = "ai-badge";
+    aiBadge.textContent = "AI";
+    role.appendChild(aiBadge);
+  }
 
   const text = document.createElement("span");
   text.className = "node-text";
