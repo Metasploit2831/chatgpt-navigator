@@ -18,8 +18,6 @@
     }
   },
 
-  "permissions": ["activeTab", "scripting"],
-
   "content_scripts": [
     {
       "matches": [

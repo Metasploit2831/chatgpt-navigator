@@ -1,57 +1,39 @@
 # ChatGPT Navigator
 
-A Chrome extension that transforms long AI conversations into a structured, navigable thinking interface.
+A Chrome extension that turns long ChatGPT conversations into a compact, searchable sidebar.
 
----
+## Features
 
-## 🧠 Overview
+- Prompt and answer outline grouped by conversation turn
+- Click any item to jump back to that message
+- Search across indexed prompts and answers
+- Clean overlay UI with keyboard focus states
+- No backend, tracking, or external dependencies
 
-AI conversations today are powerful—but hard to navigate.
+## Install Locally
 
-As chats grow longer, users lose:
-- Context  
-- Structure  
-- The ability to revisit key decisions  
+1. Open Chrome and go to `chrome://extensions`.
+2. Enable `Developer mode`.
+3. Select `Load unpacked`.
+4. Choose this repository folder.
+5. Open `https://chatgpt.com` or `https://chat.openai.com`.
 
-**ChatGPT Navigator** solves this by converting conversations into a structured sidebar, allowing users to scan, navigate, and understand their thinking more efficiently.
-
----
-
-## ✨ Features
-
-- 🌲 **Tree-based Navigation**  
-  Converts chat messages into a hierarchical structure for easier exploration  
-
-- ⚡ **Instant Jump-to-Context**  
-  Click any node to scroll directly to that part of the conversation  
-
-- 🔍 **Search**  
-  Quickly find relevant parts of long chats  
-
-- 🧩 **Smart Label Compression (V1)**  
-  Shortens long prompts into scannable labels  
-
-- 🪄 **Lightweight Overlay UI**  
-  Injected directly into ChatGPT with no backend required  
-
----
-
-## 🛠️ Tech Stack
-
-- Vanilla JavaScript (Content Scripts)  
-- Chrome Extension APIs (Manifest V3)  
-- DOM Parsing & Injection  
-- CSS for UI rendering  
-
----
-
-## ⚙️ How It Works
+## How It Works
 
 ```text
-ChatGPT UI (DOM)
-      ↓
-Extract User Messages
-      ↓
-Transform into Structured Nodes
-      ↓
-Render Sidebar Navigator
+ChatGPT DOM
+  -> Extract user and assistant messages
+  -> Group assistant answers under the nearest prompt
+  -> Render a searchable sidebar
+  -> Scroll to messages on click
+```
+
+## Files
+
+- `manifest.json` defines the MV3 extension and ChatGPT URL matches.
+- `content.js` extracts messages, builds the outline, and injects controls.
+- `styles.css` styles the navigator overlay.
+
+## Notes
+
+ChatGPT DOM structure can change. If messages stop appearing, update `ROLE_SELECTOR` or `TURN_SELECTOR` in `content.js`.
